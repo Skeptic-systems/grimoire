@@ -35,7 +35,7 @@ import {
   createSnapshot,
   deleteMod as deleteModApi,
 } from '../lib/api';
-import { getActiveDeadlockPath } from '../lib/appSettings';
+import { getActiveDeadlockPath, shouldBlurNsfw } from '../lib/appSettings';
 import { useStableCallback } from '../lib/useStableCallback';
 import {
   isModDownloadPending,
@@ -58,8 +58,8 @@ import { getPrimaryFile, isModOutdated } from '../types/gamebanana';
 import {
   useAppStore,
 } from '../stores/appStore';
-import type { BrowseNsfwFilter, BrowseTimeRange, BrowseLayout, BrowseArtistRef } from '../stores/appStore';
-import type { BrowseNsfwContentMode, HiddenCreator } from '../types/mod';
+import type { BrowseTimeRange, BrowseLayout, BrowseArtistRef } from '../stores/appStore';
+import type { NsfwContentMode, HiddenCreator } from '../types/mod';
 import BrowseFileQuickPicker from '../components/BrowseFileQuickPicker';
 import { DynamicSelect } from '../components/common/DynamicSelect';
 import { HeroSelect } from '../components/common/HeroSelect';
@@ -420,7 +420,7 @@ export default function Browse() {
   const hiddenCreatorsStamp = useMemo(() => hiddenCreatorIdsStamp(hiddenCreators), [hiddenCreators]);
   // Filter inputs are mirrored from the store so they survive page nav.
   // `setBrowseUi({...})` is the write path; reads come straight from `browseUi`.
-  const { search, layout, sort, section, nsfw, addedWithin, addedFrom, addedTo, heroCategoryId, categoryId, submitter, hiddenCreatorOverrideId } = browseUi;
+  const { search, layout, sort, section, addedWithin, addedFrom, addedTo, heroCategoryId, categoryId, submitter, hiddenCreatorOverrideId } = browseUi;
   // Artist mode: the grid is scoped to one submitter's mods and Browse shows an
   // artist banner instead of the normal search/filter header.
   const artistMode = !!submitter;
@@ -437,7 +437,6 @@ export default function Browse() {
   const setLayout = useCallback((v: BrowseLayout) => setBrowseUi({ layout: v }), [setBrowseUi]);
   const setSort = useCallback((v: SortOption) => setBrowseUi({ sort: v }), [setBrowseUi]);
   const setSection = useCallback((v: string) => setBrowseUi({ section: v }), [setBrowseUi]);
-  const setNsfw = useCallback((v: BrowseNsfwFilter) => setBrowseUi({ nsfw: v }), [setBrowseUi]);
   const setAddedWithin = useCallback((v: BrowseTimeRange) => setBrowseUi({ addedWithin: v }), [setBrowseUi]);
   const setAddedFrom = useCallback((v: string) => setBrowseUi({ addedFrom: v }), [setBrowseUi]);
   const setAddedTo = useCallback((v: string) => setBrowseUi({ addedTo: v }), [setBrowseUi]);
@@ -448,13 +447,13 @@ export default function Browse() {
     setBrowseCardSizeMultiplierState(clampedMultiplier);
     localStorage.setItem(BROWSE_CARD_SIZE_MULTIPLIER_KEY, String(clampedMultiplier));
   }, []);
-  const browseNsfwContentMode: BrowseNsfwContentMode =
-    settings?.browseNsfwContentMode ??
-    (settings?.hideNsfwPreviews === false ? 'show' : 'blur');
-  const browseBlurNsfwPreviews = browseNsfwContentMode === 'blur';
-  const setBrowseNsfwContentMode = useCallback((mode: BrowseNsfwContentMode) => {
+  // Mirrors the Settings control: both write the one app-wide setting.
+  const nsfwContentMode: NsfwContentMode = settings?.nsfwContentMode ?? 'blur';
+  const browseBlurNsfwPreviews = shouldBlurNsfw(settings);
+  const nsfw = nsfwContentMode === 'hide' ? 'sfw' : 'all';
+  const setNsfwContentMode = useCallback((mode: NsfwContentMode) => {
     if (!settings) return;
-    void saveSettings({ ...settings, browseNsfwContentMode: mode });
+    void saveSettings({ ...settings, nsfwContentMode: mode });
   }, [saveSettings, settings]);
   const setBrowseHideOutdated = useCallback((checked: boolean) => {
     if (!settings) return;
@@ -464,7 +463,7 @@ export default function Browse() {
   // wipe loaded results or scroll position. The cache stamp encodes current
   // filters; if filters changed in between (impossible today since they only
   // change on Browse, but defensive) we ignore the stale cache.
-  const initialFilterStamp = `${browseUi.section}|${browseUi.search}|${browseUi.sort}|${browseUi.categoryId}|${browseUi.heroCategoryId}|${browseUi.nsfw}|${browseUi.addedWithin}|${browseUi.addedFrom}|${browseUi.addedTo}|${browseUi.submitter?.id ?? ''}|${browseUi.hiddenCreatorOverrideId ?? ''}|${hiddenCreatorsStamp}`;
+  const initialFilterStamp = `${browseUi.section}|${browseUi.search}|${browseUi.sort}|${browseUi.categoryId}|${browseUi.heroCategoryId}|${nsfw}|${browseUi.addedWithin}|${browseUi.addedFrom}|${browseUi.addedTo}|${browseUi.submitter?.id ?? ''}|${browseUi.hiddenCreatorOverrideId ?? ''}|${hiddenCreatorsStamp}`;
   const initialCache = browseSession && browseSession.stamp === initialFilterStamp
     ? browseSession
     : null;
@@ -511,7 +510,7 @@ export default function Browse() {
   // double effect run in dev — the second setup compares stamps and short-
   // circuits, instead of consuming a one-shot skip flag.
   const lastFetchedStampRef = useRef<string | null>(
-    initialCache ? `${initialCache.page}|${browseUi.search}|${browseUi.sort}|${browseUi.section}|${browseUi.categoryId}|${browseUi.heroCategoryId}|${browseUi.nsfw}|${browseUi.addedWithin}|${browseUi.addedFrom}|${browseUi.addedTo}|${browseUi.submitter?.id ?? ''}|${browseUi.hiddenCreatorOverrideId ?? ''}|${hiddenCreatorsStamp}` : null
+    initialCache ? `${initialCache.page}|${browseUi.search}|${browseUi.sort}|${browseUi.section}|${browseUi.categoryId}|${browseUi.heroCategoryId}|${nsfw}|${browseUi.addedWithin}|${browseUi.addedFrom}|${browseUi.addedTo}|${browseUi.submitter?.id ?? ''}|${browseUi.hiddenCreatorOverrideId ?? ''}|${hiddenCreatorsStamp}` : null
   );
   // Monotonic guard for browse/search requests. Filter changes and newer
   // requests invalidate older responses so they cannot append stale pages into
@@ -994,8 +993,10 @@ export default function Browse() {
   useEffect(() => {
     return () => {
       const ui = useAppStore.getState().browseUi;
-      const liveHiddenCreators = useAppStore.getState().settings?.hiddenCreators ?? [];
-      const stamp = `${ui.section}|${ui.search}|${ui.sort}|${ui.categoryId}|${ui.heroCategoryId}|${ui.nsfw}|${ui.addedWithin}|${ui.addedFrom}|${ui.addedTo}|${ui.submitter?.id ?? ''}|${ui.hiddenCreatorOverrideId ?? ''}|${hiddenCreatorIdsStamp(liveHiddenCreators)}`;
+      const liveSettings = useAppStore.getState().settings;
+      const liveHiddenCreators = liveSettings?.hiddenCreators ?? [];
+      const liveNsfw = liveSettings?.nsfwContentMode === 'hide' ? 'sfw' : 'all';
+      const stamp = `${ui.section}|${ui.search}|${ui.sort}|${ui.categoryId}|${ui.heroCategoryId}|${liveNsfw}|${ui.addedWithin}|${ui.addedFrom}|${ui.addedTo}|${ui.submitter?.id ?? ''}|${ui.hiddenCreatorOverrideId ?? ''}|${hiddenCreatorIdsStamp(liveHiddenCreators)}`;
       const cachedMods = modsRef.current;
       // Don't cache an empty state — would just bypass the next fetch
       // unhelpfully. Clear instead so the next mount starts fresh.
@@ -2207,21 +2208,23 @@ export default function Browse() {
     if (section === 'Sound' && heroCategoryId === 'none') {
       nextMods = nextMods.filter((m) => inferHeroFromTitle(m.name) === null);
     }
-    if (browseNsfwContentMode === 'hide') {
-      nextMods = nextMods.filter((m) => !m.nsfw);
-    }
-    // The NSFW filter is only enforced server-side by the local-search path.
-    // The remote paths (artist mode, and the no-local-cache fallback) return
+    // Hide mode is only enforced server-side by the local-search path. The
+    // remote paths (artist mode, and the no-local-cache fallback) return
     // unfiltered records, so enforce it here too. Local results already match,
     // so re-filtering them is a no-op.
     if (nsfw === 'sfw') {
       nextMods = nextMods.filter((m) => !m.nsfw);
-    } else if (nsfw === 'nsfw') {
-      nextMods = nextMods.filter((m) => m.nsfw);
     }
 
     return nextMods;
-  }, [mods, settings?.hideOutdatedMods, section, heroCategoryId, browseNsfwContentMode, nsfw, hiddenCreatorIdSet, allowHiddenSubmitter]);
+  }, [mods, settings?.hideOutdatedMods, section, heroCategoryId, nsfw, hiddenCreatorIdSet, allowHiddenSubmitter]);
+  // Client-side filters (Hide mode, hidden creators, outdated) can empty a
+  // remote page entirely. The sentinel sits below the fold then, so page on
+  // until something survives or the results run out.
+  const pagingPastFilteredPage = displayMods.length === 0 && mods.length > 0 && hasMore && !autoLoadPaused;
+  useEffect(() => {
+    if (pagingPastFilteredPage && !loading && !loadingMore) setPage((prev) => prev + 1);
+  }, [pagingPastFilteredPage, loading, loadingMore]);
   const selectedModIndex = selectedMod
     ? displayMods.findIndex((mod) => mod.id === selectedMod.id)
     : -1;
@@ -2719,20 +2722,6 @@ export default function Browse() {
                   </div>
 
                   <div>
-                    <div className="mb-2 text-xs font-medium text-text-secondary">{t('browse.viewOptions.nsfwContent')}</div>
-                    <BrowseViewOptionControl<BrowseNsfwContentMode>
-                      label={t('browse.viewOptions.nsfwContent')}
-                      value={browseNsfwContentMode}
-                      onChange={setBrowseNsfwContentMode}
-                      options={[
-                        { value: 'show', label: t('browse.viewOptions.show'), icon: Eye },
-                        { value: 'blur', label: t('browse.viewOptions.blur'), icon: EyeClosed },
-                        { value: 'hide', label: t('browse.viewOptions.hide'), icon: EyeOff },
-                      ]}
-                    />
-                  </div>
-
-                  <div>
                     <div className="mb-2 text-xs font-medium text-text-secondary">{t('browse.viewOptions.outdatedContent')}</div>
                     <BrowseViewOptionControl<'show' | 'hide'>
                       label={t('browse.viewOptions.outdatedContent')}
@@ -2835,7 +2824,6 @@ export default function Browse() {
               const filterCount =
                 (heroCategoryId !== 'all' ? 1 : 0) +
                 (categoryId !== 'all' ? 1 : 0) +
-                (nsfw !== 'all' ? 1 : 0) +
                 (addedWithin !== 'all' ? 1 : 0);
               return (
                 <div className="relative flex-shrink-0" ref={filtersRef}>
@@ -2876,7 +2864,6 @@ export default function Browse() {
                           onClick={() => {
                             setHeroCategoryId('all');
                             setCategoryId('all');
-                            setNsfw('all');
                             setAddedWithin('all');
                             setAddedFrom('');
                             setAddedTo('');
@@ -2942,14 +2929,28 @@ export default function Browse() {
                         </div>
                       )}
 
+                      {/* Not a session filter: this is the app-wide NSFW
+                          setting, shared with Settings > Privacy & Content, so
+                          it isn't counted or reset by Clear all. */}
+                      <div className="block">
+                        <span className="block text-xs font-medium text-text-secondary mb-1.5">{t('browse.filters.content')}</span>
+                        <BrowseViewOptionControl<NsfwContentMode>
+                          label={t('browse.viewOptions.nsfwContent')}
+                          value={nsfwContentMode}
+                          onChange={setNsfwContentMode}
+                          options={[
+                            { value: 'show', label: t('browse.viewOptions.show'), icon: Eye },
+                            { value: 'blur', label: t('browse.viewOptions.blur'), icon: EyeClosed },
+                            { value: 'hide', label: t('browse.viewOptions.hide'), icon: EyeOff },
+                          ]}
+                        />
+                      </div>
+
                       {/* Recency can only be answered by the local catalog
-                          mirror, and content rating is only enforced there
-                          at query time (displayMods still post-filters nsfw
-                          for the remote paths, but on an already-truncated
-                          page). These used to be hidden entirely without a
+                          mirror. It used to be hidden entirely without a
                           catalog, so a cold cache looked like "the filters
-                          are missing/broken" with no explanation. Render
-                          them disabled and say why. */}
+                          are missing/broken" with no explanation. Render it
+                          disabled and say why. */}
                       {!hasLocalCache && (
                         <p className="rounded-md border border-border bg-bg-tertiary px-2 py-1.5 text-2xs text-text-secondary">
                           {catalogSyncing
@@ -2957,20 +2958,6 @@ export default function Browse() {
                             : t('browse.filters.catalogUnavailable')}
                         </p>
                       )}
-
-                      <div className="block">
-                        <span className="block text-xs font-medium text-text-secondary mb-1.5">{t('browse.filters.content')}</span>
-                        <Select
-                          aria-label={t('browse.filters.filterByContentRating')}
-                          value={nsfw}
-                          disabled={!hasLocalCache}
-                          onChange={(e) => setNsfw(e.target.value as BrowseNsfwFilter)}
-                        >
-                          <option value="all">{t('browse.filters.contentAll')}</option>
-                          <option value="sfw">{t('browse.filters.sfwOnly')}</option>
-                          <option value="nsfw">{t('browse.filters.nsfwOnly')}</option>
-                        </Select>
-                      </div>
 
                       <div className="block">
                         <span className="block text-xs font-medium text-text-secondary mb-1.5">{t('browse.filters.added')}</span>
@@ -3044,12 +3031,11 @@ export default function Browse() {
             heroCategoryId !== 'all' ||
             categoryId !== 'all' ||
             sort !== 'default' ||
-            nsfw !== 'all' ||
             addedWithin !== 'all' ||
             addedFrom.length > 0 ||
             addedTo.length > 0;
 
-          if (loading) {
+          if (loading || (pagingPastFilteredPage && !error)) {
             // Match perPage so the skeleton grid fills roughly the same footprint
             // as the real results once they arrive.
             return (
@@ -3089,7 +3075,6 @@ export default function Browse() {
                         setHeroCategoryId('all');
                         setCategoryId('all');
                         setSort('default');
-                        setNsfw('all');
                         setAddedWithin('all');
                         setAddedFrom('');
                         setAddedTo('');
