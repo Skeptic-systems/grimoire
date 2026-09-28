@@ -21,6 +21,7 @@ import { useAppStore } from './stores/appStore';
 import { getAssetPath } from './lib/assetPath';
 import { rollMemeAppTitle } from './lib/easterEggs';
 import { useGlobalModFileDrop } from './lib/useGlobalModFileDrop';
+import { ModSafetyPage, ModSafetySync } from './components/ModSafety';
 
 const GASSY_SOUND = getAssetPath('/sounds/gassy.mp3');
 
@@ -65,6 +66,7 @@ export default function App() {
   return (
     <>
       <HashRouter>
+        <ModSafetySync />
         <ErrorBoundary>
           <Routes>
             <Route path="/" element={<Layout />}>
@@ -75,6 +77,7 @@ export default function App() {
               <Route path="locker/*" element={<Locker />} />
               <Route path="foundry" element={<Foundry />} />
               <Route path="conflicts" element={<Conflicts />} />
+              <Route path="mod-safety" element={<ModSafetyPage />} />
               <Route path="profiles" element={<Profiles />} />
               <Route path="crosshair" element={<Crosshair />} />
               <Route path="autoexec" element={<Autoexec />} />

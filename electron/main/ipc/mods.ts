@@ -1,4 +1,6 @@
 import { ipcMain, shell } from 'electron';
+import { assertVpkSafety, modSafetySnapshot, moveSafetySnapshot } from '../services/modSafety';
+import { importDisabledVpk } from '../services/importDisabledVpk';
 import { randomUUID } from 'node:crypto';
 import { promises as fs, existsSync } from 'fs';
 import { extname, basename, join, resolve, sep } from 'path';
@@ -15,7 +17,6 @@ import {
     setModsEnabledBatch,
     setModPriorityFolder,
     allocateEnabledVpkPath,
-    allocatePriorityVpkPath,
     runExclusiveModMutation,
     type Mod,
 } from '../services/mods';
@@ -106,16 +107,20 @@ async function copyIntoModSlot(
     destPath: string,
     freshlyAllocated: boolean
 ): Promise<void> {
-    if (!freshlyAllocated) {
-        await fs.copyFile(sourcePath, destPath);
-        return;
-    }
-    await reserveOutputSlot(destPath);
+    // Inspect a private copy, then commit those exact bytes atomically.
+    const staged = `${destPath}.${randomUUID()}.safety-tmp`;
+    let reserved = false;
     try {
-        await fs.copyFile(sourcePath, destPath);
+        await fs.copyFile(sourcePath, staged);
+        await assertVpkSafety(staged, { context: 'installation', name: basename(sourcePath) });
+        if (freshlyAllocated) { await reserveOutputSlot(destPath); reserved = true; }
+        await fs.rename(staged, destPath);
+        moveSafetySnapshot(staged, destPath);
     } catch (err) {
-        try { await fs.unlink(destPath); } catch { /* ignore partial-output cleanup */ }
+        if (reserved) await fs.unlink(destPath).catch(() => {});
         throw err;
+    } finally {
+        await fs.unlink(staged).catch(() => {});
     }
 }
 
@@ -259,6 +264,7 @@ function enrichMod(mod: Mod): WireMod {
         }
         return {
             ...mod,
+            safety: modSafetySnapshot(mod.path),
             // Use the stored mod name from GameBanana if available
             name: metadata.modName || mod.name,
             thumbnailUrl: metadata.thumbnailUrl,
@@ -296,7 +302,7 @@ function enrichMod(mod: Mod): WireMod {
     // No metadata row (a VPK dropped straight into addons): still file-tree tag
     // the hero so unknown skins get their Locker chip like downloaded mods.
     const { lockerHero, lockerHeroSource } = resolveUnknownLockerHero(mod, metadata, isUnknown, globalType);
-    return { ...mod, isUnknown, globalType: globalType ?? undefined, lockerHero, lockerHeroSource };
+    return { ...mod, safety: modSafetySnapshot(mod.path), isUnknown, globalType: globalType ?? undefined, lockerHero, lockerHeroSource };
 }
 
 /**
@@ -1401,7 +1407,7 @@ async function importCustomModSource(
     args: ImportCustomModArgs,
     thumbnailFetchTargets: AdoptedThumbnailTarget[],
     requireExistingGroup = false
-): Promise<number> {
+): Promise<{ imported: number; needsReview: boolean }> {
     const {
         vpkPath,
         name,
@@ -1460,6 +1466,7 @@ async function importCustomModSource(
     let groupProfile: LocalVariantGroupProfile | undefined;
     const importWrites: LocalImportTransactionWrite[] = [];
     const thumbnailStart = thumbnailFetchTargets.length;
+    let needsReview = false;
 
     try {
         groupProfile = localGroupId
@@ -1469,24 +1476,14 @@ async function importCustomModSource(
                   requireExistingGroup
               )
             : undefined;
-        // Imports install ENABLED, so reserve a slot via the overflow-aware
-        // allocator: it fills base addons first and spills into an overflow
-        // folder (creating one + patching gameinfo) when base is full, instead
-        // of failing once a >99 user has filled citadel/addons. Metadata is
-        // keyed by the destination's metaKey (folder-prefixed for an overflow
-        // slot). Copying before the next allocate marks the slot taken, so a
-        // multi-VPK archive lands in distinct slots.
+        // Complete the whole source while disabled. Review is a separate
+        // activation step after the batch and import dialog have finished.
         for (let i = 0; i < sourceVpks.length; i++) {
-            const destPath = groupProfile?.priorityMod
-                ? await allocatePriorityVpkPath(deadlockPath)
-                : await allocateEnabledVpkPath(deadlockPath);
+            const destPath = await importDisabledVpk(deadlockPath, sourceVpks[i].path);
             const destMetaKey = metaKeyFor(destPath);
-
-            await copyIntoModSlot(sourceVpks[i].path, destPath, true);
-            // Record only after we successfully claimed/copied the slot. If
-            // reserveOutputSlot reports EEXIST, the file belongs to somebody
-            // else and rollback must never unlink it.
+            // Record only committed files owned by this import for rollback.
             importWrites.push({ destPath, metaKey: destMetaKey });
+            needsReview ||= modSafetySnapshot(destPath)?.trusted === false;
 
             // Scrub any orphan metadata at this slot before writing.
             // setModMetadata merges into the existing entry, so stale fields
@@ -1622,7 +1619,7 @@ async function importCustomModSource(
         }
     }
 
-    return sourceVpks.length;
+    return { imported: sourceVpks.length, needsReview };
 }
 
 /**
@@ -1641,10 +1638,9 @@ function fireAdoptedThumbnailFetches(targets: AdoptedThumbnailTarget[]): void {
 //
 // LOCK SCOPE: each source takes the exclusive mod mutation on its own, NOT the
 // batch as a whole. Each source (including all VPKs inside one archive) commits
-// or rolls back under one lock. If a Locker toggle claims a slot between two
-// sources, the next allocator simply picks another free slot. Holding the queue
-// for the whole batch would buy nothing but contiguous pak numbering (cosmetic)
-// while blocking every other mod mutation in the app (toggle, reorder, delete,
+// or rolls back under one lock. Each disabled file gets its own unique path.
+// Holding the queue for the whole batch would block every other mod mutation
+// in the app (toggle, reorder, delete,
 // profile apply, merge, imprint) for the minutes a 30-archive batch can take.
 //
 // Per-source failures are collected, never thrown: one corrupt archive (or
@@ -1685,7 +1681,7 @@ ipcMain.handle(
             const resolvedItem = { ...item, localGroupId };
             report({ index, total, vpkPath: item.vpkPath, phase: 'importing' });
             try {
-                const imported = await runExclusiveModMutation(() =>
+                const { imported, needsReview } = await runExclusiveModMutation(() =>
                     importCustomModSource(
                         deadlockPath,
                         resolvedItem,
@@ -1693,7 +1689,7 @@ ipcMain.handle(
                         !!item.localGroupId?.trim()
                     )
                 );
-                results.push({ vpkPath: item.vpkPath, ok: true, imported, localGroupId });
+                results.push({ vpkPath: item.vpkPath, ok: true, imported, localGroupId, needsReview });
                 report({ index, total, vpkPath: item.vpkPath, phase: 'done', imported });
             } catch (err) {
                 const error = err instanceof Error ? err.message : String(err);

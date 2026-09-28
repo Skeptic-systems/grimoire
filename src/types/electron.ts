@@ -1,3 +1,4 @@
+import type { ModSafetyPrompt, InstalledModSafety, ModSafetySnapshot } from './modSafety';
 import type {
     Mod,
     AppSettings,
@@ -359,6 +360,8 @@ export interface ImportCustomModResult {
     ok: boolean;
     /** Mod slots this source produced (an archive can yield several). */
     imported: number;
+    /** Imported disabled; this source contains versions still needing consent. */
+    needsReview?: boolean;
     /** Resolved local group id when this source was imported as a variant.
      *  Returned even on failure so a retry joins files that already landed. */
     localGroupId?: string;
@@ -814,6 +817,13 @@ export interface ElectronAPI {
     };
 
     // Mods
+    getModSafetyPrompts: () => Promise<ModSafetyPrompt[]>;
+    respondModSafety: (id: string, accepted: boolean) => Promise<void>;
+    getInstalledModSafety: () => Promise<{ mods: InstalledModSafety[]; running: boolean; failed: boolean }>;
+    rescanModSafety: () => Promise<InstalledModSafety[]>;
+    inspectModSafety: (id: string) => Promise<ModSafetySnapshot>;
+    reviewModSafety: (id: string, fingerprint: string) => Promise<Mod>;
+    onModSafetyChanged: (callback: () => void) => () => void;
     getMods: () => Promise<Mod[]>;
     enableMod: (modId: string) => Promise<Mod>;
     disableMod: (modId: string) => Promise<Mod>;

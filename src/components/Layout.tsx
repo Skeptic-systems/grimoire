@@ -13,6 +13,7 @@ import { showToast } from '../stores/toastStore';
 import { getSettings, setSettings } from '../lib/api';
 import { useGameinfoStore } from '../stores/gameinfoStore';
 import GameinfoBanner from './GameinfoBanner';
+import { ModSafetyBanner } from './ModSafety';
 import { getActiveDeadlockPath } from '../lib/appSettings';
 import { applyAccentColor } from '../lib/accentColor';
 import { applyBackgroundGradient } from '../lib/backgroundGradient';
@@ -293,7 +294,8 @@ export default function Layout() {
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <GameinfoBanner />
         <AppUpdateBanner />
-        <div key={outletKey} className="min-h-0 flex-1 overflow-auto animate-fade-in">
+        <ModSafetyBanner />
+        <div key={outletKey} className="min-h-0 flex-1 overflow-auto animate-fade-in [scrollbar-gutter:stable]">
           <Outlet />
         </div>
       </main>

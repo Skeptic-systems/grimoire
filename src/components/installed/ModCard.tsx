@@ -21,9 +21,12 @@ import type { ViewMode } from '../common/PageComponents';
 import { GlobalLoadBadge, ChipText, HeroTagLabel } from './chips';
 import { heroNameForLabel } from '../../lib/heroNames';
 import { EMPTY_LIST_IDS } from './emptyIds';
+import { ModSafetyBadge } from '../ModSafety';
 
 interface ModCardProps {
   mod: {
+    safety?: Mod['safety'];
+    safetyTarget?: Pick<Mod, 'id' | 'name' | 'safety'>;
     id: string;
     name: string;
     fileName: string;
@@ -226,6 +229,7 @@ function ModMediaPreview({
 
   if (!isSound) {
     return (
+      <div className={`group relative w-full ${mediaFrameClasses} bg-bg-tertiary rounded-lg overflow-hidden border border-hl/[0.08] ${mediaSpacingClasses}`}>
       <button
         type="button"
         onClick={(e) => {
@@ -233,7 +237,7 @@ function ModMediaPreview({
           onOpenDetails?.();
         }}
         disabled={!canOpen}
-        className={`group relative w-full ${mediaFrameClasses} bg-bg-tertiary rounded-lg overflow-hidden block border border-hl/[0.08] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-default enabled:cursor-pointer ${mediaSpacingClasses}`}
+        className="absolute inset-0 h-full w-full focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-default enabled:cursor-pointer"
         aria-label={detailsLabel}
         data-card-action="true"
         draggable={false}
@@ -243,8 +247,9 @@ function ModMediaPreview({
         {canOpen && (
           <div className="pointer-events-none absolute inset-0 bg-bg-primary/0 transition-colors duration-200 group-hover:bg-bg-primary/20" />
         )}
-        {overlayBadges}
       </button>
+      {overlayBadges}
+      </div>
     );
   }
 
@@ -615,12 +620,15 @@ function ModListRowContent({
         )}
       </button>
 
-      <div className="grid min-w-0 grid-rows-[22px_24px]">
+      <div className="grid min-w-0">
         <EditableModTitle
           name={mod.name}
           className="min-w-0 truncate text-[13px] font-semibold leading-[22px] text-text-primary"
           onRename={onRenameLocal}
         />
+        <div className="min-w-0">
+          <ModSafetyBadge id={(mod.safetyTarget ?? mod).id} name={(mod.safetyTarget ?? mod).name} snapshot={(mod.safetyTarget ?? mod).safety} />
+        </div>
         <div className="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap text-2xs leading-[24px] text-text-secondary">
           {!mod.enabled && mod.priorityMod && (
             <MetaTextChip
@@ -936,7 +944,7 @@ export function ModCard({
       ? mod.thumbnailUrl
       : null;
   const shellClasses = isList
-    ? 'grid min-h-[58px] grid-cols-[52px_64px_minmax(0,1fr)_auto] items-center gap-3 px-3 py-0'
+    ? 'grid min-h-[58px] grid-cols-[32px_56px_minmax(0,1fr)_auto] items-center gap-2 px-3 py-0'
     : isCompact
       ? 'flex h-full flex-col gap-0 p-2'
       : 'flex h-full flex-col gap-0 p-2';
@@ -1323,14 +1331,14 @@ export function ModCard({
         )}
         {(() => {
         const overlayBadges = (
-          <>
+          <div className="absolute inset-x-2 top-2 z-10 flex items-start justify-between gap-2">
             {mod.enabled && !selectMode && (
               mod.priorityMod ? (
-                <div className="absolute top-2 left-2 z-10 flex h-5 items-start">
+                <div className="flex h-5 shrink-0 items-start">
                   <GlobalLoadBadge variant="overlay" />
                 </div>
               ) : (
-              <div className="absolute top-2 left-2 z-10 flex h-5 items-start" data-card-action="true">
+              <div className="flex h-5 shrink-0 items-start" data-card-action="true">
                 <PriorityEditor
                   modName={mod.name}
                   value={loadPosition ?? mod.priority}
@@ -1342,7 +1350,7 @@ export function ModCard({
               )
             )}
             {!mod.enabled && !selectMode && (
-              <div className="absolute top-2 left-2 z-10 flex flex-col items-start gap-1">
+              <div className="flex shrink-0 flex-col items-start gap-1">
                 <Tag tone="neutral" variant="overlay" icon={PowerOff} title={t('locker.global.disabledBadgeTitle')}>
                   {t('locker.global.disabledBadge')}
                 </Tag>
@@ -1358,7 +1366,9 @@ export function ModCard({
                 )}
               </div>
             )}
-              <div className="absolute top-2 right-2 z-10 flex flex-col items-end gap-1">
+              <div className="ml-auto flex min-w-0 flex-wrap items-start justify-end gap-1">
+              {!selectMode && <ModSafetyBadge variant="overlay" id={(mod.safetyTarget ?? mod).id}
+                name={(mod.safetyTarget ?? mod).name} snapshot={(mod.safetyTarget ?? mod).safety} />}
               {mod.nsfw && (
                 <Tag
                   tone="danger"
@@ -1431,7 +1441,7 @@ export function ModCard({
                 </Tag>
               )}
             </div>
-          </>
+          </div>
         );
 
         return (
