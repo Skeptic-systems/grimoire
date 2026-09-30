@@ -134,9 +134,14 @@ export const HERO_ALIASES = SHARED_HERO_ALIASES;
  * "Old Gods, New Blood" batch). They are the same hero, so the tag menu shows a
  * single "Doorman". Kept client-side only: the shared roster and server-side
  * inference are untouched.
+ *
+ * "RatKing" is GameBanana's Skins category name for Rat King. buildHeroList
+ * canonicalizes through here so the Locker card, assets and codename lookups
+ * all see the roster name.
  */
 const HERO_DISPLAY_ALIASES: Readonly<Record<string, string>> = {
   'The Doorman': 'Doorman',
+  RatKing: 'Rat King',
 };
 
 /** Canonical display name for a hero, collapsing roster duplicates (see above). */
@@ -247,7 +252,7 @@ export function buildHeroList(categories: GameBananaCategoryNode[]): HeroCategor
   if (!skins?.children) return [];
   return skins.children.map((child) => ({
     id: child.id,
-    name: child.name,
+    name: canonicalHeroName(child.name),
     iconUrl: child.iconUrl,
   }));
 }
