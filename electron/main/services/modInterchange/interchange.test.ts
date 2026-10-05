@@ -112,7 +112,10 @@ describe('DMM 2.x -> Grimoire through the interchange format', () => {
     ]);
     const meta = metadata(sb.userData);
     expect(meta['pak01_dir.vpk']).toMatchObject({ gameBananaId: 1, gameBananaFileId: 11, modName: 'Mod One' });
-    expect(meta['addons2/pak01_dir.vpk']).toMatchObject({ gameBananaId: 2 });
+    // Mod 5's fresh slot landed ahead of shard 2, so the enabled mods are laid
+    // out again in document order: 1, 2, 5.
+    expect(meta['pak02_dir.vpk']).toMatchObject({ gameBananaId: 2 });
+    expect(readFileSync(join(sb.addons, 'pak02_dir.vpk'), 'utf-8')).toBe('MOD-TWO-SHARD-2');
     const sound = Object.values(meta).find((m) => m.gameBananaId === 3);
     expect(sound).toMatchObject({ sourceSection: 'Sound', modName: 'Voice Three' });
     const local = Object.values(meta).find((m) => m.modName === 'Mine');
@@ -120,8 +123,8 @@ describe('DMM 2.x -> Grimoire through the interchange format', () => {
     expect(local?.gameBananaId).toBeUndefined();
     // Mod 5 came from the cache into a fresh enabled slot.
     const five = Object.entries(meta).find(([, m]) => m.gameBananaId === 5);
-    expect(five?.[0]).toMatch(/^pak\d{2}_dir\.vpk$/);
-    expect(readFileSync(join(sb.addons, five![0]), 'utf-8')).toBe('CACHED-FIVE');
+    expect(five?.[0]).toBe('pak03_dir.vpk');
+    expect(readFileSync(join(sb.addons, 'pak03_dir.vpk'), 'utf-8')).toBe('CACHED-FIVE');
 
     // A second run is a no-op.
     const again = await importInterchange(read.document, { deadlockPath: sb.deadlock });
@@ -129,11 +132,11 @@ describe('DMM 2.x -> Grimoire through the interchange format', () => {
   });
 
   it('computes shard folders for default and named profiles', () => {
-    expect(dmmShardDir(join('C:', 'g', 'citadel', 'addons'), 1)).toBe(join('C:', 'g', 'citadel', 'addons'));
-    expect(dmmShardDir(join('C:', 'g', 'citadel', 'addons'), 3)).toBe(join('C:', 'g', 'citadel', 'addons3'));
-    expect(dmmShardDir(join('C:', 'g', 'citadel', 'addons', 'profile_x'), 2)).toBe(
-      join('C:', 'g', 'citadel', 'addons2', 'profile_x')
-    );
+    // An absolute root on every platform: `C:` is a relative segment on Linux.
+    const citadel = join(tmpdir(), 'g', 'citadel');
+    expect(dmmShardDir(join(citadel, 'addons'), 1)).toBe(join(citadel, 'addons'));
+    expect(dmmShardDir(join(citadel, 'addons'), 3)).toBe(join(citadel, 'addons3'));
+    expect(dmmShardDir(join(citadel, 'addons', 'profile_x'), 2)).toBe(join(citadel, 'addons2', 'profile_x'));
   });
 });
 

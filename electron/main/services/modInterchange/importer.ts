@@ -43,6 +43,7 @@ import {
 import {
   backupMetadataSidecar,
   getModMetadata,
+  hasModIdentity,
   hashFileSha256,
   loadMetadata,
   removeModMetadata,
@@ -194,22 +195,6 @@ function isLiveDisabledSlot(src: string, disabledPath: string): boolean {
   return resolve(dirname(src)) === resolve(disabledPath);
 }
 
-/** Whether a metadata entry shows Grimoire already manages this VPK. Adopting
- *  over such an entry in place would hijack a real mod's identity. */
-function isGrimoireManaged(meta: ModMetadata): boolean {
-  return (
-    meta.gameBananaId !== undefined ||
-    meta.merged !== undefined ||
-    meta.lockerCosmetics !== undefined ||
-    meta.lockerSounds !== undefined ||
-    meta.lockerColors !== undefined ||
-    meta.lockerTrippySkins !== undefined ||
-    meta.soulImport !== undefined ||
-    meta.urnImport !== undefined ||
-    meta.lockerHero !== undefined
-  );
-}
-
 /**
  * Slots are allocated one by one and in-place adoptions keep theirs, so the
  * imported mods can end up interleaved in the wrong order. Lay the enabled
@@ -232,6 +217,11 @@ async function applyImportedLoadOrder(
     .map((key) => byKey.get(key))
     .filter((m): m is (typeof before)[number] => !!m && loadable(m))
     .map((m) => m.id);
+  // Already in that order: leave in-place adoptions on the slots they hold.
+  const desired = [...existing, ...importedIds];
+  const wanted = new Set(desired);
+  const current = before.filter((m) => wanted.has(m.id)).map((m) => m.id);
+  if (current.every((id, i) => id === desired[i])) return;
   const hashByKey = new Map(
     results
       .flatMap((r) => [r.installedAs, ...(r.installedKeys ?? [])])
@@ -239,7 +229,7 @@ async function applyImportedLoadOrder(
       .map((k) => [k, getModMetadata(k)?.sha256?.toLowerCase()])
   );
   try {
-    await reorderModsUnlocked(deadlockPath, [...existing, ...importedIds]);
+    await reorderModsUnlocked(deadlockPath, desired);
   } catch (err) {
     console.warn('[Interchange] could not apply the imported load order:', err);
     return;
@@ -281,15 +271,21 @@ export async function importInterchange(
   // the VPK Grimoire already has (profiles reference them). Only entries whose
   // file is still installed count: a sidecar entry left by a deleted mod must
   // not block that mod from coming back.
-  const installed = new Set((await scanMods(opts.deadlockPath)).map((m) => m.metaKey));
+  const installedMods = await scanMods(opts.deadlockPath);
+  const installed = new Set(installedMods.map((mod) => mod.metaKey));
+  const installedPathByKey = new Map(installedMods.map((mod) => [mod.metaKey, mod.path]));
   const managedSubmissionIds = new Map<number, string>();
   const managedHashes = new Map<string, string>();
+  const unknownKeyByHash = new Map<string, string>();
   for (const [metaKey, meta] of Object.entries(allMetadata)) {
     if (!installed.has(metaKey)) continue;
     if (meta.gameBananaId !== undefined && !managedSubmissionIds.has(meta.gameBananaId)) {
       managedSubmissionIds.set(meta.gameBananaId, metaKey);
     }
-    if (meta.sha256) managedHashes.set(meta.sha256.toLowerCase(), metaKey);
+    if (!meta.sha256) continue;
+    const hash = meta.sha256.toLowerCase();
+    if (hasModIdentity(meta)) managedHashes.set(hash, metaKey);
+    else unknownKeyByHash.set(hash, metaKey);
   }
   // A local mod has no id to compare, only its bytes.
   const knownLocalFile = async (mod: InterchangeMod): Promise<string | undefined> => {
@@ -420,6 +416,8 @@ export async function importInterchange(
 
         try {
           await assertVpkSafety(src, { context: 'installation', name: mod.name });
+          const twinKey = unknownKeyByHash.get(srcHash);
+          const twinPath = twinKey ? installedPathByKey.get(twinKey) : undefined;
           // A file already sitting where Grimoire scans (the other manager's
           // part of the shared addons folder) is a Grimoire mod the moment
           // Grimoire looks: adopt it and move it into the state the document
@@ -428,13 +426,15 @@ export async function importInterchange(
           const inScanArea = isInScanRoot(src, addonRoots);
           if (inScanArea) {
             const existing = getModMetadata(metaKeyFor(src));
-            if (existing && isGrimoireManaged(existing)) {
+            if (existing && hasModIdentity(existing)) {
               fileSkips.push(`${label} (already managed by Grimoire)`);
               continue;
             }
           }
           let destPath: string;
-          if (wantEnabled && isLiveEnabledSlot(src, addonRoots)) {
+          if (twinPath && resolve(twinPath) !== resolve(src)) {
+            destPath = twinPath;
+          } else if (wantEnabled && isLiveEnabledSlot(src, addonRoots)) {
             destPath = src;
           } else if (wantEnabled) {
             // Must write before the next allocation so the slot scan sees it taken.
@@ -444,7 +444,7 @@ export async function importInterchange(
           } else if (isLiveDisabledSlot(src, disabledPath)) {
             destPath = src;
             const existing = getModMetadata(metaKeyFor(destPath));
-            if (existing && isGrimoireManaged(existing)) {
+            if (existing && hasModIdentity(existing)) {
               fileSkips.push(`${label} (already managed by Grimoire)`);
               continue;
             }
@@ -473,6 +473,7 @@ export async function importInterchange(
           removeModMetadata(metaKey);
           await setModMetadataWithHash(metaKey, meta, destPath);
           managedHashes.set(srcHash, metaKey);
+          unknownKeyByHash.delete(srcHash);
           adoptedKeys.push(metaKey);
           if (file.selected !== false || !hasSelection) loadedKeys.push(metaKey);
           if (wantEnabled) importedEnabled.push(metaKey);
