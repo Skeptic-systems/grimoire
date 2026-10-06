@@ -25,6 +25,11 @@
  * identical files are not duplicated, Grimoire-managed slots are never re-
  * tagged, DMM claims older than the file they point at are ignored, and the
  * sidecar is backed up lazily before the first write.
+ *
+ * Re-runs: the import ledger (ledger.ts) remembers which installed files each
+ * document key became. A key found there resolves to those files whatever the
+ * source's records now point at, and a file another key became is never
+ * attributed to this one.
  */
 
 import { basename, dirname, join, resolve } from 'path';
@@ -59,6 +64,7 @@ import type {
 } from '../../../../src/lib/modInterchange';
 import { dmmIdFromVpkName } from '../../../../src/lib/dmmMigration';
 import { dmmExtensionOf } from './dmmReader';
+import { ledgerModsFor, recordLedgerMods, type LedgerModRecord } from './ledger';
 
 /** Tolerance when comparing a VPK's mtime against the mtime of the DMM record
  *  that claims it (filesystems and DMM's deploy-then-save ordering can put
@@ -224,7 +230,7 @@ async function applyImportedLoadOrder(
   if (current.every((id, i) => id === desired[i])) return;
   const hashByKey = new Map(
     results
-      .flatMap((r) => [r.installedAs, ...(r.installedKeys ?? [])])
+      .flatMap((r) => [r.installedAs, ...(r.installedKeys ?? []), ...(r.variantKeys ?? [])])
       .filter((k): k is string => !!k)
       .map((k) => [k, getModMetadata(k)?.sha256?.toLowerCase()])
   );
@@ -250,7 +256,22 @@ async function applyImportedLoadOrder(
       r.modId = generateModId(r.installedAs);
     }
     if (r.installedKeys) r.installedKeys = r.installedKeys.map(remap);
+    if (r.variantKeys) r.variantKeys = r.variantKeys.map(remap);
   }
+}
+
+/** Ledger records for every result that ended on installed VPKs, by the
+ *  hashes those files have now (after the load-order pass renamed them). */
+function ledgerRecordsOf(results: InterchangeImportResult[]): Record<string, LedgerModRecord> {
+  const hashes = (keys: string[] | undefined) =>
+    (keys ?? []).map((key) => getModMetadata(key)?.sha256?.toLowerCase()).filter((h): h is string => !!h);
+  const records: Record<string, LedgerModRecord> = {};
+  for (const r of results) {
+    const loaded = hashes(r.installedKeys);
+    const sha256 = [...new Set([...loaded, ...hashes(r.variantKeys)])];
+    if (sha256.length > 0) records[r.key] = { sha256, loaded };
+  }
+  return records;
 }
 
 export async function importInterchange(
@@ -268,25 +289,66 @@ export async function importInterchange(
   // everything imported last time.
   const allMetadata = loadMetadata();
   // Existing file per identity, so skipped entries can still be resolved to
-  // the VPK Grimoire already has (profiles reference them). Only entries whose
+  // the VPKs Grimoire already has (profiles reference them). Only entries whose
   // file is still installed count: a sidecar entry left by a deleted mod must
   // not block that mod from coming back.
   const installedMods = await scanMods(opts.deadlockPath);
   const installed = new Set(installedMods.map((mod) => mod.metaKey));
   const installedPathByKey = new Map(installedMods.map((mod) => [mod.metaKey, mod.path]));
-  const managedSubmissionIds = new Map<number, string>();
+  const installedEnabled = new Map(installedMods.map((mod) => [mod.metaKey, mod.enabled]));
+  const hashOfKey = (key: string) => allMetadata[key]?.sha256?.toLowerCase();
+  const keysBySubmissionId = new Map<number, string[]>();
+  const keysByHash = new Map<string, string[]>();
+  const keysByLocalGroup = new Map<string, string[]>();
   const managedHashes = new Map<string, string>();
   const unknownKeyByHash = new Map<string, string>();
+  const push = <K>(map: Map<K, string[]>, key: K, value: string) => {
+    const list = map.get(key);
+    if (list) list.push(value);
+    else map.set(key, [value]);
+  };
   for (const [metaKey, meta] of Object.entries(allMetadata)) {
     if (!installed.has(metaKey)) continue;
-    if (meta.gameBananaId !== undefined && !managedSubmissionIds.has(meta.gameBananaId)) {
-      managedSubmissionIds.set(meta.gameBananaId, metaKey);
-    }
+    if (meta.gameBananaId !== undefined) push(keysBySubmissionId, meta.gameBananaId, metaKey);
+    if (meta.localGroupId !== undefined) push(keysByLocalGroup, meta.localGroupId, metaKey);
     if (!meta.sha256) continue;
     const hash = meta.sha256.toLowerCase();
+    push(keysByHash, hash, metaKey);
     if (hasModIdentity(meta)) managedHashes.set(hash, metaKey);
     else unknownKeyByHash.set(hash, metaKey);
   }
+
+  // Rule 6: what earlier imports from this source turned each key into.
+  // Checked before anything the document says about files, because the
+  // source's own records go stale once an import has reordered the slots.
+  const manager = document.source.manager;
+  const ledger = ledgerModsFor(manager);
+  const ledgerOwnerByHash = new Map<string, string>();
+  for (const [key, record] of Object.entries(ledger)) {
+    for (const hash of record.sha256) ledgerOwnerByHash.set(hash, key);
+  }
+  const ledgerKeysFor = (mod: InterchangeMod): string[] => [
+    ...new Set((ledger[mod.key]?.sha256 ?? []).flatMap((hash) => keysByHash.get(hash) ?? [])),
+  ];
+
+  /** Whether an installed file Grimoire already manages is this entry's mod
+   *  and not another one a stale source record happens to point at. */
+  const belongsTo = (mod: InterchangeMod, key: string): boolean => {
+    const meta = getModMetadata(key);
+    if (!meta) return false;
+    const hash = meta.sha256?.toLowerCase();
+    const owner = hash ? ledgerOwnerByHash.get(hash) : undefined;
+    if (owner) return owner === mod.key;
+    return meta.gameBananaId === gameBananaIdOf(mod);
+  };
+
+  /** Every installed VPK of the mod `key` belongs to: a local mod's group
+   *  siblings, else just the file itself. */
+  const localSiblingsOf = (key: string): string[] => {
+    const group = allMetadata[key]?.localGroupId;
+    return group !== undefined ? keysByLocalGroup.get(group) ?? [key] : [key];
+  };
+
   // A local mod has no id to compare, only its bytes.
   const knownLocalFile = async (mod: InterchangeMod): Promise<string | undefined> => {
     if (mod.origin.provider !== 'local') return undefined;
@@ -299,31 +361,76 @@ export async function importInterchange(
     return undefined;
   };
 
+  /**
+   * Split an already installed mod's VPKs into the ones a profile loads and
+   * the ones it keeps off. Recording only one of them would make a profile
+   * turn off the rest of a multi-VPK mod, or pick a disabled variant. Loaded
+   * are, in order of preference: the files matching what the document selects,
+   * what the ledger recorded as loaded, what Grimoire has enabled now, all.
+   */
+  const splitInstalled = async (
+    mod: InterchangeMod,
+    keys: string[],
+    record: LedgerModRecord | undefined
+  ): Promise<Pick<InterchangeImportResult, 'installedAs' | 'installedKeys' | 'variantKeys' | 'modId'>> => {
+    const pick = (hashes: Iterable<string>) => {
+      const set = new Set(hashes);
+      return keys.filter((key) => {
+        const hash = hashOfKey(key);
+        return hash !== undefined && set.has(hash);
+      });
+    };
+    let loaded: string[] = [];
+    if (!opts.planOnly) {
+      const hasSelection = mod.files.some((f) => f.selected !== false);
+      const documentHashes: string[] = [];
+      for (const file of mod.files) {
+        if (hasSelection && file.selected === false) continue;
+        let hash = file.sha256?.toLowerCase();
+        if (!hash && existsSync(file.path)) hash = (await hashFileSha256(file.path).catch(() => ''))?.toLowerCase();
+        if (hash) documentHashes.push(hash);
+      }
+      loaded = pick(documentHashes);
+    }
+    if (loaded.length === 0 && record) loaded = pick(record.loaded);
+    if (loaded.length === 0) loaded = keys.filter((key) => installedEnabled.get(key));
+    if (loaded.length === 0) loaded = keys;
+    const variants = keys.filter((key) => !loaded.includes(key));
+    return {
+      installedAs: loaded[0],
+      installedKeys: loaded,
+      variantKeys: variants.length > 0 ? variants : undefined,
+      modId: generateModId(loaded[0]),
+    };
+  };
+
   const adoptable: InterchangeMod[] = [];
   let unknownToCatalog = 0;
   for (const mod of selected) {
     const gbId = gameBananaIdOf(mod);
-    const localExisting = await knownLocalFile(mod);
-    if (localExisting) {
+    const fromLedger = ledgerKeysFor(mod);
+    const localExisting = fromLedger.length > 0 ? undefined : await knownLocalFile(mod);
+    const existingKeys =
+      fromLedger.length > 0
+        ? fromLedger
+        : localExisting
+          ? localSiblingsOf(localExisting)
+          : gbId !== undefined
+            ? keysBySubmissionId.get(gbId) ?? []
+            : [];
+    if (existingKeys.length > 0) {
       status[mod.key] = 'managed';
       results.push({
         key: mod.key,
         name: mod.name,
         status: 'skipped',
-        reason: 'already managed by Grimoire (identical file installed)',
-        installedAs: localExisting,
-        modId: generateModId(localExisting),
-      });
-    } else if (gbId !== undefined && managedSubmissionIds.has(gbId)) {
-      status[mod.key] = 'managed';
-      const existing = managedSubmissionIds.get(gbId)!;
-      results.push({
-        key: mod.key,
-        name: mod.name,
-        status: 'skipped',
-        reason: 'already managed by Grimoire (submission id present in metadata)',
-        installedAs: existing,
-        modId: generateModId(existing),
+        reason:
+          fromLedger.length > 0
+            ? 'already managed by Grimoire (imported earlier)'
+            : localExisting
+              ? 'already managed by Grimoire (identical file installed)'
+              : 'already managed by Grimoire (submission id present in metadata)',
+        ...(await splitInstalled(mod, existingKeys, ledger[mod.key])),
       });
     } else if (gbId !== undefined && opts.isKnownSubmission && !opts.isKnownSubmission(gbId)) {
       status[mod.key] = 'unknown-catalog';
@@ -377,13 +484,20 @@ export async function importInterchange(
 
     for (const [index, mod] of ordered.entries()) {
       opts.onProgress?.(index, ordered.length, mod.name);
-      let alreadyHave: string | undefined;
       const meta = metadataFor(mod);
       const adoptedKeys: string[] = [];
       // The adopted files a profile turns on when it enables this mod.
       const loadedKeys: string[] = [];
+      // Files of this mod Grimoire already had; a profile records them too.
+      const existingLoaded: string[] = [];
+      const existingKept: string[] = [];
       const fileSkips: string[] = [];
       const hasSelection = mod.files.some((f) => f.selected !== false);
+      const noteExisting = (key: string | undefined, loads: boolean) => {
+        if (!key || !belongsTo(mod, key)) return;
+        if (existingLoaded.includes(key) || existingKept.includes(key)) return;
+        (loads ? existingLoaded : existingKept).push(key);
+      };
 
       for (const file of mod.files) {
         const src = file.path;
@@ -409,7 +523,7 @@ export async function importInterchange(
           continue;
         }
         if (managedHashes.has(srcHash)) {
-          alreadyHave ??= managedHashes.get(srcHash);
+          noteExisting(managedHashes.get(srcHash), file.selected !== false || !hasSelection);
           fileSkips.push(`${label} (an identical file is already managed by Grimoire)`);
           continue;
         }
@@ -427,6 +541,7 @@ export async function importInterchange(
           if (inScanArea) {
             const existing = getModMetadata(metaKeyFor(src));
             if (existing && hasModIdentity(existing)) {
+              noteExisting(metaKeyFor(src), file.selected !== false || !hasSelection);
               fileSkips.push(`${label} (already managed by Grimoire)`);
               continue;
             }
@@ -445,6 +560,7 @@ export async function importInterchange(
             destPath = src;
             const existing = getModMetadata(metaKeyFor(destPath));
             if (existing && hasModIdentity(existing)) {
+              noteExisting(metaKeyFor(destPath), file.selected !== false || !hasSelection);
               fileSkips.push(`${label} (already managed by Grimoire)`);
               continue;
             }
@@ -483,25 +599,35 @@ export async function importInterchange(
       }
 
       const local = mod.origin.provider === 'local';
+      const loaded = [...loadedKeys, ...existingLoaded];
+      const kept = [...adoptedKeys.filter((key) => !loadedKeys.includes(key)), ...existingKept];
+      const reason = fileSkips.length > 0 ? fileSkips.join('; ') : undefined;
       if (adoptedKeys.length > 0) {
+        // Nothing selected came across: the profile still needs one file.
+        if (loaded.length === 0) loaded.push(kept.shift()!);
         results.push({
           key: mod.key,
           name: mod.name,
           status: 'imported',
-          installedAs: loadedKeys[0] ?? adoptedKeys[0],
-          installedKeys: loadedKeys.length > 0 ? loadedKeys : [adoptedKeys[0]],
-          modId: generateModId(loadedKeys[0] ?? adoptedKeys[0]),
+          installedAs: loaded[0],
+          installedKeys: loaded,
+          variantKeys: kept.length > 0 ? kept : undefined,
+          modId: generateModId(loaded[0]),
           local,
-          reason: fileSkips.length > 0 ? fileSkips.join('; ') : undefined,
+          reason,
         });
       } else {
+        const known = loaded.length > 0 ? loaded : kept;
+        const variants = loaded.length > 0 ? kept : [];
         results.push({
           key: mod.key,
           name: mod.name,
           status: 'skipped',
-          reason: fileSkips.length > 0 ? fileSkips.join('; ') : 'no usable VPK files',
-          installedAs: alreadyHave,
-          modId: alreadyHave ? generateModId(alreadyHave) : undefined,
+          reason: reason ?? 'no usable VPK files',
+          installedAs: known[0],
+          installedKeys: known.length > 0 ? known : undefined,
+          variantKeys: variants.length > 0 ? variants : undefined,
+          modId: known[0] ? generateModId(known[0]) : undefined,
         });
       }
     }
@@ -510,6 +636,7 @@ export async function importInterchange(
   });
 
   opts.onProgress?.(ordered.length, ordered.length, '');
+  recordLedgerMods(manager, ledgerRecordsOf(results));
   const adopted = results.filter((r) => r.status === 'imported').length;
   console.log(
     `[Interchange] ${document.source.manager} -> Grimoire: ${adopted} adopted, ` +

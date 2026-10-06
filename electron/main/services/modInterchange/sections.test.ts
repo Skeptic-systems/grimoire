@@ -193,3 +193,151 @@ describe('importInterchangeSelection', () => {
     expect(presets.presets[0].settings.dotSize).toBe(3);
   });
 });
+
+describe('re-running an import', () => {
+  const doc = (bundle: string, files: Record<string, string>) => ({
+    format: 'deadlock-mod-interchange' as const,
+    version: 1,
+    source: { manager: 'test' },
+    contents: ['mods' as const, 'profiles' as const],
+    mods: Object.entries(files).map(([key, file], order) => ({
+      key,
+      name: key,
+      enabled: true,
+      order,
+      origin: { provider: 'local' as const },
+      files: [{ name: file, path: join(bundle, file) }],
+    })),
+    profiles: [
+      {
+        key: 'p',
+        name: 'Ranked',
+        active: false,
+        mods: Object.keys(files).map((modKey, order) => ({ modKey, enabled: true, order })),
+      },
+    ],
+    crosshairs: [],
+    warnings: [],
+  });
+
+  it('refreshes the profile it created and follows the ledger over stale records', async () => {
+    const sb = sandbox();
+    const bundle = join(sb.root, 'bundle');
+    mkdirSync(bundle);
+    writeFileSync(join(bundle, 'a_dir.vpk'), 'MOD-A');
+    writeFileSync(join(bundle, 'b_dir.vpk'), 'MOD-B');
+    const selection = { modKeys: ['local:a', 'local:b'], profileKeys: ['p'], crosshairKeys: [] };
+
+    const first = await importInterchangeSelection(
+      doc(bundle, { 'local:a': 'a_dir.vpk', 'local:b': 'b_dir.vpk' }),
+      selection,
+      { deadlockPath: sb.deadlock }
+    );
+    expect(first.profiles[0]).toMatchObject({ name: 'Ranked', created: true });
+    expect(first.profiles[0].updated).toBeUndefined();
+
+    // The source's record for A now points at B's file (a reused slot).
+    const second = await importInterchangeSelection(
+      doc(bundle, { 'local:a': 'b_dir.vpk', 'local:b': 'b_dir.vpk' }),
+      selection,
+      { deadlockPath: sb.deadlock }
+    );
+    expect(second.results.every((r) => r.status === 'skipped')).toBe(true);
+    expect(second.profiles[0]).toMatchObject({ name: 'Ranked', created: true, updated: true, mods: 2 });
+
+    const profiles = JSON.parse(readFileSync(join(sb.userData, 'profiles.json'), 'utf-8'));
+    expect(profiles.map((p: { name: string }) => p.name)).toEqual(['Ranked']);
+    const fileNames = profiles[0].mods.map((m: { fileName: string }) => m.fileName);
+    expect(new Set(fileNames).size).toBe(2);
+    const keyOf = (r: { key: string }) => second.results.find((x) => x.key === r.key)!.installedAs;
+    expect(keyOf({ key: 'local:a' })).toBe(first.results.find((r) => r.key === 'local:a')!.installedAs);
+  });
+
+  it('records every installed VPK of an already managed mod', async () => {
+    const sb = sandbox();
+    writeFileSync(join(sb.addons, 'pak01_dir.vpk'), 'PART-ONE');
+    writeFileSync(join(sb.addons, 'pak02_dir.vpk'), 'PART-TWO-LONGER');
+    writeFileSync(join(sb.addons, '.disabled', 'variant_dir.vpk'), 'OTHER-VARIANT');
+    const meta = { modName: 'Pack', gameBananaId: 42, gameBananaFileId: 7 };
+    writeFileSync(
+      join(sb.userData, 'mod-metadata.json'),
+      JSON.stringify({
+        'pak01_dir.vpk': meta,
+        'pak02_dir.vpk': meta,
+        'variant_dir.vpk': meta,
+      })
+    );
+    const report = await importInterchangeSelection(
+      {
+        format: 'deadlock-mod-interchange',
+        version: 1,
+        source: { manager: 'test' },
+        contents: ['mods', 'profiles'],
+        mods: [
+          {
+            key: 'gamebanana:mod:42',
+            name: 'Pack',
+            enabled: true,
+            order: 0,
+            origin: { provider: 'gamebanana', submissionType: 'mod', submissionId: '42' },
+            files: [{ name: 'gone_dir.vpk', path: join(sb.root, 'gone_dir.vpk') }],
+          },
+        ],
+        profiles: [
+          { key: 'p', name: 'Pack only', active: false, mods: [{ modKey: 'gamebanana:mod:42', enabled: true, order: 0 }] },
+        ],
+        crosshairs: [],
+        warnings: [],
+      },
+      { modKeys: [], profileKeys: ['p'], crosshairKeys: [] },
+      { deadlockPath: sb.deadlock }
+    );
+    expect(report.results[0].status).toBe('skipped');
+    const profile = JSON.parse(readFileSync(join(sb.userData, 'profiles.json'), 'utf-8'))[0];
+    const state = Object.fromEntries(
+      profile.mods.map((m: { fileName: string; enabled: boolean }) => [m.fileName, m.enabled])
+    );
+    expect(state).toEqual({ 'pak01_dir.vpk': true, 'pak02_dir.vpk': true, 'variant_dir.vpk': false });
+  });
+});
+
+describe('DMM archive names', () => {
+  it('looks them up in the download folder only, never in a live slot', async () => {
+    const sb = sandbox();
+    // An unrelated mod holds the live pak01 slot.
+    writeFileSync(join(sb.addons, 'pak01_dir.vpk'), 'SOMEONE-ELSE');
+    writeFileSync(
+      join(sb.addons, '.dmm.json'),
+      JSON.stringify({
+        version: 3,
+        mods: {
+          '5': { enabled: true, order: 0, shard: 1 },
+          '6': { enabled: true, order: 1, shard: 1 },
+        },
+      })
+    );
+    const statePath = join(sb.root, 'state.json');
+    const tree = { files: [{ name: 'pak01_dir.vpk', is_selected: true }] };
+    const mods = [
+      { remoteId: '5', name: 'Stored', installedFileTree: tree },
+      { remoteId: '6', name: 'Not stored', installedFileTree: tree },
+    ];
+    const state = {
+      activeProfileId: 'default',
+      localMods: mods,
+      profiles: {
+        default: { id: 'default', name: 'Default', isDefault: true, folderName: null, enabledMods: {}, mods },
+      },
+    };
+    writeFileSync(statePath, JSON.stringify({ 'local-config': JSON.stringify({ state, version: 26 }) }));
+    const stored = join(sb.root, 'mods', '5', 'files', 'pak01_dir.vpk');
+    mkdirSync(join(sb.root, 'mods', '5', 'files'), { recursive: true });
+    writeFileSync(stored, 'STORED');
+
+    const document = await readDmmDocument({ deadlockPath: sb.deadlock, dmmStatePath: statePath });
+    expect(document.mods.map((m) => [m.key, m.files.map((f) => f.path)])).toEqual([
+      ['gamebanana:mod:5', [stored]],
+    ]);
+    expect(document.warnings.some((w) => w.includes('Not stored'))).toBe(true);
+  });
+});

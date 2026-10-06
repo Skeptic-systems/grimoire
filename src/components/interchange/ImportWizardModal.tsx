@@ -326,7 +326,12 @@ export default function ImportWizardModal({
       <ModalHeader
         title={t('interchange.importTitle', { source: sourceName })}
         titleId="interchange-wizard-title"
-        subtitle={t(`interchange.stepDescription.${step}`, { source: sourceName })}
+        subtitle={t(
+          step === 'contents' && source.kind === 'bundle'
+            ? 'interchange.stepDescription.contentsBundle'
+            : `interchange.stepDescription.${step}`,
+          { source: sourceName }
+        )}
         onClose={onClose}
         closeLabel={t('common.actions.close')}
         closeDisabled={busy && !error}
@@ -518,9 +523,11 @@ export default function ImportWizardModal({
             <ul className="space-y-1 text-text-secondary">
               {report.profiles.map((p) => (
                 <li key={p.name}>
-                  {p.created
-                    ? t('interchange.profileCreated', { name: p.name, count: p.mods })
-                    : t('interchange.profileFailed', { name: p.name, error: p.reason ?? '' })}
+                  {p.updated
+                    ? t('interchange.profileUpdated', { name: p.name, count: p.mods })
+                    : p.created
+                      ? t('interchange.profileCreated', { name: p.name, count: p.mods })
+                      : t('interchange.profileFailed', { name: p.name, error: p.reason ?? '' })}
                   {p.created && p.reason ? ` (${p.reason})` : ''}
                 </li>
               ))}

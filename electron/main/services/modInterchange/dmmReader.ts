@@ -362,7 +362,7 @@ export async function readDmmLibrary(opts: DmmReadOptions): Promise<DmmReadResul
   for (const entry of plan.entries) {
     const files: string[] = [];
     const missing: string[] = [];
-    for (const name of entry.vpkFiles) {
+    for (const name of entry.storeOnly ? [] : entry.vpkFiles) {
       const found = await locateFile(name, entry, baseDir);
       if (found) files.push(found);
       else missing.push(name);
@@ -375,7 +375,7 @@ export async function readDmmLibrary(opts: DmmReadOptions): Promise<DmmReadResul
     const allFiles = [...files, ...storeFiles];
     if (allFiles.length === 0) {
       document.warnings.push(
-        `Skipped ${entry.modName ?? entry.dmmId}: its VPK file(s) are gone (${missing.join(', ')})`
+        `Skipped ${entry.modName ?? entry.dmmId}: its VPK file(s) are gone (${(entry.storeOnly ? entry.vpkFiles : missing).join(', ')})`
       );
       continue;
     }

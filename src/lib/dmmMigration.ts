@@ -84,6 +84,10 @@ export interface DmmAdoptionEntry {
    *  files (also listed by another mod through stale DMM bookkeeping) are removed
    *  here and awarded to a single owner, so two mods never fight over one slot. */
   vpkFiles: string[];
+  /** `vpkFiles` are names inside the downloaded archive, not files DMM
+   *  installed: they only mean something in DMM's download folder. A
+   *  `pak01_dir.vpk` there says nothing about the live pak01 slot. */
+  storeOnly?: boolean;
 }
 
 export interface DmmAdoptionPlan {
@@ -192,6 +196,7 @@ export function planDmmAdoption(
     enabled: boolean;
     priority: number;
     files: string[];
+    storeOnly: boolean;
     info?: DmmStateMod;
     sourceFileName?: string;
   }
@@ -228,9 +233,12 @@ export function planDmmAdoption(
     const info = stateInfo(identity);
     // Last resort: DMM's mod store keeps every downloaded VPK under its
     // original name, so a mod whose addon files are gone can still come
-    // across. The reader resolves these names against the store folder.
+    // across. These are archive names (often `pakNN_dir.vpk`), so the reader
+    // looks them up in the store folder only, never in the addon slots.
+    let storeOnly = false;
     if (files.length === 0 && info?.selectedVpkNames?.length) {
       files = info.selectedVpkNames.slice();
+      storeOnly = true;
     }
 
     if (files.length === 0) {
@@ -248,6 +256,7 @@ export function planDmmAdoption(
       enabled,
       priority,
       files,
+      storeOnly,
       info,
       sourceFileName: sourceFileName || undefined,
     });
@@ -260,7 +269,8 @@ export function planDmmAdoption(
   // VPK mod almost always reflects the slot's current truth over a multi-VPK
   // pack's stale claim, so rank by fewest files first, then load order, then id
   // for determinism. Enabled files are keyed per shard: every shard has its
-  // own pak01.
+  // own pak01. Store-only names claim no slot at all: they live in the mod's
+  // own download folder.
   const ranked = [...drafts].sort(
     (a, b) =>
       a.files.length - b.files.length ||
@@ -268,7 +278,10 @@ export function planDmmAdoption(
       a.submissionId - b.submissionId ||
       a.identity.dmmId.localeCompare(b.identity.dmmId)
   );
-  const slotKey = (d: Draft, f: string) => `${d.enabled ? d.shard : 0}:${f.toLowerCase()}`;
+  const slotKey = (d: Draft, f: string) =>
+    d.storeOnly
+      ? `store:${d.identity.dmmId}:${f.toLowerCase()}`
+      : `${d.enabled ? d.shard : 0}:${f.toLowerCase()}`;
   const owner = new Map<string, string>();
   for (const d of ranked) {
     for (const f of d.files) {
@@ -305,6 +318,7 @@ export function planDmmAdoption(
       enabled: d.enabled,
       priority: d.priority,
       vpkFiles,
+      ...(d.storeOnly ? { storeOnly: true } : {}),
     });
   }
 

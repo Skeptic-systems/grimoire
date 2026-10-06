@@ -391,6 +391,9 @@ export interface InterchangeImportResult {
   /** Every adopted VPK a profile loads for this mod (multi-VPK mods have
    *  several); unselected variants are left out. */
   installedKeys?: string[];
+  /** The mod's other installed VPKs (unselected variants, files Grimoire
+   *  keeps off). A profile records them as disabled. */
+  variantKeys?: string[];
   /** Grimoire mod id of the (first) adopted VPK. */
   modId?: string;
   /** True when the mod arrived without a GameBanana identity. */
@@ -399,7 +402,8 @@ export interface InterchangeImportResult {
 
 export interface InterchangeImportReport {
   results: InterchangeImportResult[];
-  profiles: Array<{ name: string; created: boolean; mods: number; reason?: string }>;
+  /** `updated`: a profile an earlier import created was refreshed instead. */
+  profiles: Array<{ name: string; created: boolean; updated?: boolean; mods: number; reason?: string }>;
   crosshairs: number;
   warnings: string[];
 }

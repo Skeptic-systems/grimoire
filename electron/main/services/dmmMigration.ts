@@ -5,9 +5,10 @@
  * (modInterchange/importer.ts) adopts it. This wrapper keeps the migration's
  * report shape for callers and tests that think in DMM terms.
  *
- * Non-destructive: DMM's files are never moved or deleted, so its install keeps
- * working after import. See importer.ts for the in-place vs copy rules and the
- * guards against stale DMM bookkeeping.
+ * Nothing is deleted, but VPKs in the shared addons folder are adopted in
+ * place and moved or renamed into Grimoire's slots, so DMM's records for them
+ * go stale. See importer.ts for the in-place vs copy rules and the guards
+ * against stale DMM bookkeeping.
  */
 
 import {

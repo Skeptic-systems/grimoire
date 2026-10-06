@@ -8,14 +8,24 @@
  * are therefore imported too, disabled unless the library selection enables
  * them; a profile entry whose mod could not be imported is dropped, never
  * replaced by a guess.
+ *
+ * A profile an earlier import of the same source created is refreshed in
+ * place (the import ledger maps it), so re-running the import never stacks
+ * up "Ranked (2)", "Ranked (3)" copies.
  */
 
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { basename, join } from 'path';
+import { join } from 'path';
 
 import { getUserDataPath } from '../../utils/paths';
-import { getModMetadata } from '../metadata';
-import { addProfile, generateProfileId, loadProfiles } from '../profiles';
+import { scanMods } from '../mods';
+import {
+  addProfile,
+  generateProfileId,
+  loadProfiles,
+  profileModsForKeys,
+  replaceProfile,
+} from '../profiles';
 import {
   crosshairSettingsFromConvars,
   normalizeCrosshairSettings,
@@ -28,6 +38,7 @@ import type {
 } from '../../../../src/lib/modInterchange';
 import type { CrosshairPreset, ProfileMod } from '../../../../src/types/electron';
 import { importInterchange, type InterchangeImportOptions } from './importer';
+import { ledgerProfileId, recordLedgerProfile } from './ledger';
 
 export interface SelectionImportOptions
   extends Omit<InterchangeImportOptions, 'keys' | 'planOnly' | 'onProgress'> {
@@ -90,10 +101,19 @@ export async function importInterchangeSelection(
     onProgress: (current, total, name) =>
       opts.onProgress?.({ stage: 'mods', current, total, name }),
   });
-  const installedAs = new Map(
+  // Entry key -> the VPKs a profile turns on, and the mod's other files it
+  // keeps off. All of them are recorded: an entry naming only one would make
+  // applying the profile disable the rest of the mod.
+  const filesByKey = new Map(
     outcome.results
       .filter((r) => r.installedAs)
-      .map((r) => [r.key, r.installedKeys?.length ? r.installedKeys : [r.installedAs as string]])
+      .map((r) => [
+        r.key,
+        {
+          loaded: r.installedKeys?.length ? r.installedKeys : [r.installedAs as string],
+          kept: r.variantKeys ?? [],
+        },
+      ])
   );
 
   const report: InterchangeImportReport = {
@@ -103,43 +123,57 @@ export async function importInterchangeSelection(
     warnings: [...outcome.warnings],
   };
 
+  const manager = document.source.manager;
+  const installed = profiles.length > 0 ? await scanMods(opts.deadlockPath) : [];
   const crosshairsByKey = new Map(document.crosshairs.map((c) => [c.key, c]));
   const takenNames = loadProfiles().map((p) => p.name);
   for (const [index, profile] of profiles.entries()) {
     opts.onProgress?.({ stage: 'profiles', current: index, total: profiles.length, name: profile.name });
-    const mods: ProfileMod[] = [];
+    // Grimoire profiles list the files to turn on, in load order. Each file
+    // appears once: an enabled claim wins over a kept-off one.
+    const picks = new Map<string, { metaKey: string; enabled: boolean; priority: number }>();
+    const pick = (metaKey: string, enabled: boolean, priority: number) => {
+      const existing = picks.get(metaKey);
+      if (!existing) picks.set(metaKey, { metaKey, enabled, priority });
+      else if (enabled && !existing.enabled) picks.set(metaKey, { metaKey, enabled, priority });
+    };
     let dropped = 0;
-    // Grimoire profiles list the files to turn on, in load order. Entries are
-    // matched back by GameBanana ids, then by content hash (the only stable
-    // identity a local mod has), so both are recorded with the file name.
     const ordered = [...profile.mods].sort((a, b) => a.order - b.order);
     for (const [position, entry] of ordered.entries()) {
-      const metaKeys = installedAs.get(entry.modKey);
-      if (!metaKeys) {
+      const files = filesByKey.get(entry.modKey);
+      if (!files) {
         dropped++;
         continue;
       }
-      for (const metaKey of metaKeys) {
-        const meta = getModMetadata(metaKey);
-        mods.push({
-          fileName: basename(metaKey),
-          enabled: entry.enabled,
-          priority: position,
-          ...(meta?.gameBananaId !== undefined ? { gameBananaId: meta.gameBananaId } : {}),
-          ...(meta?.gameBananaFileId !== undefined ? { gameBananaFileId: meta.gameBananaFileId } : {}),
-          ...(meta?.sha256 ? { sha256: meta.sha256.toLowerCase() } : {}),
-        });
-      }
+      for (const metaKey of files.loaded) pick(metaKey, entry.enabled, position);
+      for (const metaKey of files.kept) pick(metaKey, false, position);
     }
-    const name = uniqueName(profile.name, takenNames);
-    takenNames.push(name);
+    // Matched back by GameBanana ids, then by content hash (the only stable
+    // identity a local mod has), so both are recorded with the file name.
+    const mods: ProfileMod[] = profileModsForKeys(installed, [...picks.values()]);
     const crosshairConvars = profile.crosshairKey
       ? crosshairsByKey.get(profile.crosshairKey)?.convars
       : undefined;
     const crosshair = crosshairConvars ? crosshairSettingsFromConvars(crosshairConvars) : null;
     const now = new Date().toISOString();
+    const reason = dropped > 0 ? `${dropped} mod(s) could not be imported and were left out` : undefined;
+    const previousId = ledgerProfileId(manager, profile.key);
+    const previous = previousId ? loadProfiles().find((p) => p.id === previousId) : undefined;
     try {
-      addProfile({
+      if (previous) {
+        replaceProfile({
+          ...previous,
+          mods,
+          ...(crosshair ? { crosshair } : {}),
+          ...(profile.autoexec?.length ? { autoexecCommands: profile.autoexec } : {}),
+          updatedAt: now,
+        });
+        report.profiles.push({ name: previous.name, created: true, updated: true, mods: mods.length, reason });
+        continue;
+      }
+      const name = uniqueName(profile.name, takenNames);
+      takenNames.push(name);
+      const created = addProfile({
         id: generateProfileId(),
         name,
         mods,
@@ -148,15 +182,11 @@ export async function importInterchangeSelection(
         createdAt: now,
         updatedAt: now,
       });
-      report.profiles.push({
-        name,
-        created: true,
-        mods: mods.length,
-        reason: dropped > 0 ? `${dropped} mod(s) could not be imported and were left out` : undefined,
-      });
+      recordLedgerProfile(manager, profile.key, created.id);
+      report.profiles.push({ name, created: true, mods: mods.length, reason });
     } catch (err) {
       report.profiles.push({
-        name,
+        name: previous?.name ?? profile.name,
         created: false,
         mods: 0,
         reason: err instanceof Error ? err.message : String(err),

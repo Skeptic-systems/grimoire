@@ -171,7 +171,11 @@ finishes, even when the source data is incomplete or out of date:
    source manager shows, not incidental file or key order.
 6. An importer remembers which document key became which mod in its library.
    Re-importing after the user re-identified a mod (local to GameBanana) must
-   not bring the old copy back.
+   not bring the old copy back. Grimoire keeps this in
+   `interchange-ledger.json` in userData, per source manager: each key maps to
+   the content hashes of the VPKs it became (file names change when slots are
+   reordered), and each document profile to the Grimoire profile it created,
+   which a re-import refreshes instead of duplicating.
 7. Profile entries that point at a mod which was skipped or failed are
    dropped from that profile, never replaced by a guess.
 8. Imported local mods are offered for identification afterwards (hash

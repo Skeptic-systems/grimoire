@@ -3250,7 +3250,8 @@
     "importTitle": "Import from {{source}}",
     "stepDescription": {
       "loading": "Reading your {{source}} library.",
-      "contents": "Choose what to bring over. {{source}} keeps working, nothing there is changed.",
+      "contents": "Choose what to bring over. Mods in the shared addons folder are moved and renamed for Grimoire, so {{source}} may lose track of them.",
+      "contentsBundle": "Choose what to bring over. The {{source}} itself is not changed.",
       "importing": "Copying mods and settings.",
       "unrecognized": "These mods arrived without a GameBanana link. Identify them to get updates and details, or skip.",
       "done": "The import is finished."
@@ -3305,6 +3306,8 @@
     "summary": "{{imported}} imported, {{skipped}} skipped",
     "profileCreated_one": "Created profile {{name}} with {{count}} mod",
     "profileCreated_other": "Created profile {{name}} with {{count}} mods",
+    "profileUpdated_one": "Updated profile {{name}} with {{count}} mod",
+    "profileUpdated_other": "Updated profile {{name}} with {{count}} mods",
     "profileFailed": "Profile {{name}} could not be created: {{error}}",
     "crosshairsAdded_one": "Added {{count}} crosshair preset",
     "crosshairsAdded_other": "Added {{count}} crosshair presets",
